@@ -6,7 +6,9 @@
 
 namespace meteorite
 {
-    void generate_code(char * fname);
+    
+
+    void generate_code(char * filename);
 } // namespace meteorite
 
 

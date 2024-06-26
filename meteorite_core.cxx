@@ -6,8 +6,10 @@
 #include <unordered_map>
 #include <vector>
 #include <fstream>
-#include <regex>
+#include <cctype>
+#include <algorithm>
 
+// map of all possible instructions
 std::unordered_map<std::string, supernova::inspx> const instruction_map = {
     {"andr", supernova::inspx::andr_instrc},
     {"andi", supernova::inspx::andi_instrc},
@@ -69,29 +71,96 @@ std::unordered_map<std::string, supernova::inspx> const instruction_map = {
     {"inb", supernova::inspx::bin_instrc},
     {"inw", supernova::inspx::in_instrc}};
 
-inline void trim(std::string &s)
-{
+/**
+ * @brief trim trailing whitespace and remove comments on a line
+*/
+inline std::string trim(std::string s) {
     s.erase(s.begin(), std::find_if_not(s.begin(), s.end(), isspace));
     s.erase(std::find_if_not(s.rbegin(), s.rend(), isspace).base(), s.end());
     s.erase(std::find(s.begin(), s.end(), ';'), s.end());
+    return s;
 }
 
+
 struct later_label {
+    /** name of the label */
     std::string name;
+    /** index on the instructions */
     uint64_t index;
+    
     uint8_t rd;
     uint8_t r1;
     supernova::inspx opcode;
     bool is_l_type;
 };
-inline auto const label_expr =       std::regex(R"-(\[(.{1,32})\]:)-");
-inline auto const rinst_expr =       std::regex(R"-((\w{3,5})\s+r(\d{1,2})\s+r(\d{1,2})\s+r(\d{2}))-");
-inline auto const sinst_label_expr = std::regex(R"-((\w{3,5})\s+r(\d{1,2})\s+r(\d{1,2})\s+\[(.{1,32})\])-");
-inline auto const sinst_dimm_expr =  std::regex(R"-((\w{3,5})\s+r(\d{1,2})\s+r(\d{1,2})\s+\$(\d+))-");
-inline auto const sinst_ximm_expr =  std::regex(R"-((\w{3,5})\s+r(\d{1,2})\s+r(\d{1,2})\s+#([0-9a-fA-F]+))-");
-inline auto const linst_label_expr = std::regex(R"-((\w{3,5})\s+r(\d{1,2})\s+\[(.{1,32})\])-");
-inline auto const linst_dimm_expr =  std::regex(R"-((\w{3,5})\s+r(\d{1,2})\s+\$(\d+))-");
-inline auto const linst_ximm_expr =  std::regex(R"-((\w{3,5})\s+r(\d{1,2})\s+#([0-9a-fA-F]+))-");
+
+bool match_label_expr(const std::string &str, std::string &label) {
+    if (str.size() > 34 || str.front() != '[' || str.back() != ':' || *(str.end() - 2) != ']')
+        return false;
+    label = str.substr(1, str.size() - 3);
+    return true;
+}
+
+bool match_rinst_expr(const std::string &str, std::string &opcode, uint8_t &rd, uint8_t &r1, uint8_t &r2) {
+    size_t pos1 = str.find(" r");
+    if (pos1 == std::string::npos) return false;
+    pos1++;
+    opcode = trim(str.substr(0, pos1));
+    size_t pos2 = str.find('r', pos1 + 1);
+    if (pos2 == std::string::npos) return false;
+    size_t pos3 = str.find('r', pos2 + 1);
+    if (pos3 == std::string::npos) return false;
+    rd = std::stoi(str.substr(pos1 + 1, pos2 - pos1 - 1));
+    r1 = std::stoi(str.substr(pos2 + 1, pos3 - pos2 - 1));
+    r2 = std::stoi(str.substr(pos3 + 1));
+    return true;
+}
+
+bool match_sinst_expr(const std::string &str, std::string &opcode, uint8_t &rd, uint8_t &r1, uint64_t &immediate, std::string &label) {
+    size_t pos1 = str.find(" r");
+    if (pos1 == std::string::npos) return false;
+    pos1++;
+    opcode = trim(str.substr(0, pos1));
+    size_t pos2 = str.find('r', pos1 + 1);
+    if (pos2 == std::string::npos) return false;
+    size_t pos3 = str.find(' ', pos2 + 1);
+    if (pos3 == std::string::npos) return false;
+    rd = std::stoi(str.substr(pos1 + 1, pos2 - pos1 - 1));
+    r1 = std::stoi(str.substr(pos2 + 1, pos3 - pos2 - 1));
+    std::string imm_label = str.substr(pos3 + 1);
+    if (imm_label.front() == '$') {
+        immediate = std::stoul(imm_label.substr(1));
+    } else if (imm_label.front() == '#') {
+        immediate = std::stoul(imm_label.substr(1), nullptr, 16);
+    } else if (imm_label.front() == '[' && imm_label.back() == ']') {
+        label = imm_label.substr(1, imm_label.size() - 2);
+    } else {
+        return false;
+    }
+    return true;
+}
+
+bool match_linst_expr(const std::string &str, std::string &opcode, uint8_t &rd, uint64_t &immediate, std::string &label) {
+    size_t pos1 = str.find(" r");
+    if (pos1 == std::string::npos) return false;
+    pos1++;
+    opcode = trim(str.substr(0, pos1));
+    size_t pos2 = str.find(' ', pos1 + 1);
+    if (pos2 == std::string::npos) return false;
+    rd = std::stoi(str.substr(pos1 + 1, pos2 - pos1 - 1));
+    std::string imm_label = str.substr(pos2 + 1);
+    if (imm_label.front() == '$') {
+        immediate = std::stoul(imm_label.substr(1));
+    } else if (imm_label.front() == '#') {
+        immediate = std::stoul(imm_label.substr(1), nullptr, 16);
+    } else if (imm_label.front() == '[' && imm_label.back() == ']') {
+        label = imm_label.substr(1, imm_label.size() - 2);
+    } else {
+        return false;
+    }
+    return true;
+}
+
 uint64_t convert_instructions(std::stringstream &codestream, std::vector<uint64_t> & instructions)
 {
     const char name[6]{0};
@@ -111,86 +180,54 @@ uint64_t convert_instructions(std::stringstream &codestream, std::vector<uint64_
 
     while (std::getline(codestream, instruction))
     {
-        trim(instruction);
+        instruction = trim(instruction);
         if (instruction.empty())
         {
             continue;
         }
 
         auto inststr = instruction;
-        std::smatch regex_match;
-        if (std::regex_match(inststr, regex_match, label_expr) && regex_match.size() == 2)
-        {
-            label_map[regex_match[1]] = instruction_pointer;
+        std::string opcode, label;
+        if (match_label_expr(inststr, label)) {
+            label_map[label] = instruction_pointer;
             continue;
         }
-        if (std::regex_match(inststr, regex_match, rinst_expr) && regex_match.size() == 5)
-        {
-            auto const opcode = instruction_map.at(regex_match[1]);
-            rd = std::stoi(regex_match[2]);
-            r1 = std::stoi(regex_match[3]);
-            r2 = std::stoi(regex_match[4]);
-            binstr = static_cast<uint64_t>(supernova::RInstruction(opcode, r1, r2, rd));
+        if (match_rinst_expr(inststr, opcode, rd, r1, r2)) {
+            auto const opcode_enum = instruction_map.at(opcode);
+            binstr = static_cast<uint64_t>(supernova::RInstruction(opcode_enum, r1, r2, rd));
         }
-        else if (std::regex_match(inststr, regex_match, sinst_ximm_expr) && regex_match.size() == 5)
-        {
-            auto opcode = instruction_map.at(regex_match[1]);
-            rd = std::stoi(regex_match[2]);
-            r1 = std::stoi(regex_match[3]);
-            immediate = std::stol(regex_match[4], nullptr, 16);
-            binstr = static_cast<uint64_t>(supernova::SInstruction(opcode, r1, rd, immediate));
-        }
-        else if (std::regex_match(inststr, regex_match, sinst_dimm_expr) && regex_match.size() == 5)
-        {
-            auto opcode = instruction_map.at(regex_match[1]);
-            rd = std::stoi(regex_match[2]);
-            r1 = std::stoi(regex_match[3]);
-            immediate = std::stol(regex_match[4]);
-            binstr = static_cast<uint64_t>(supernova::SInstruction(opcode, r1, rd, immediate));
-        }
-        else if (std::regex_match(inststr, regex_match, sinst_label_expr) && regex_match.size() == 5)
-        {
-            auto opcode = instruction_map.at(regex_match[1]);
-            rd = std::stoi(regex_match[2]);
-            r1 = std::stoi(regex_match[3]);
-            if (!label_map.contains(regex_match[4])) {
-                undefined_labels.emplace_back(
-                    label_v, instruction_pointer / 8, rd, r1, opcode, false
-                );
-                binstr = 0;
+        else if (match_sinst_expr(inststr, opcode, rd, r1, immediate, label)) {
+            auto opcode_enum = instruction_map.at(opcode);
+            if (label.empty()) {
+                binstr = static_cast<uint64_t>(supernova::SInstruction(opcode_enum, r1, rd, immediate));
             } else {
-                auto address = label_map[regex_match[4]];
-                auto reladd = address - instruction_pointer;
-                binstr = static_cast<uint64_t>(supernova::SInstruction(opcode, r1, rd, reladd));
+                if (!label_map.contains(label)) {
+                    undefined_labels.emplace_back(
+                        label, instruction_pointer / 8, rd, r1, opcode_enum, false
+                    );
+                    binstr = 0;
+                } else {
+                    auto address = label_map[label];
+                    auto reladd = address - instruction_pointer;
+                    binstr = static_cast<uint64_t>(supernova::SInstruction(opcode_enum, r1, rd, reladd));
+                }
             }
         }
-        else if (std::regex_match(inststr, regex_match, linst_ximm_expr) && regex_match.size() == 4)
-        {
-            auto opcode = instruction_map.at(regex_match[1]);
-            rd = std::stoi(regex_match[2]);
-            immediate = std::stol(regex_match[3], nullptr, 16);
-            binstr = static_cast<uint64_t>(supernova::LInstruction(opcode, rd, immediate));
-        }
-        else if (std::regex_match(inststr, regex_match, linst_dimm_expr) && regex_match.size() == 4)
-        {
-            auto opcode = instruction_map.at(regex_match[1]);
-            rd = std::stoi(regex_match[2]);
-            immediate = std::stol(regex_match[3]);
-            binstr = static_cast<uint64_t>(supernova::LInstruction(opcode, r1, immediate));
-        }
-        else if (std::regex_match(inststr, regex_match, linst_label_expr) && regex_match.size() == 4)
-        {
-            auto opcode = instruction_map.at(regex_match[1]);
-            rd = std::stoi(regex_match[2]);
-            if (!label_map.contains(regex_match[3])) {
-                undefined_labels.emplace_back(
-                    label_v, instruction_pointer / 8, rd, r1, opcode, false
-                );
-                binstr = 0;
+        else if (match_linst_expr(inststr, opcode, rd, immediate, label)) {
+            auto opcode_enum = instruction_map.at(opcode);
+            if (label.empty()) {
+                binstr = static_cast<uint64_t>(supernova::LInstruction(opcode_enum, rd, immediate));
             } else {
-                auto address = label_map[regex_match[3]];
-                auto reladd = address - instruction_pointer;
-                binstr = static_cast<uint64_t>(supernova::SInstruction(opcode, r1, rd, reladd));
+                if (!label_map.contains(label)) {
+                    undefined_labels.emplace_back(
+                        label, instruction_pointer / 8, rd, r1, opcode_enum, true
+                    );
+                    binstr = 0;
+                } else {
+                    auto address = label_map[label];
+                    auto reladd = address - instruction_pointer;
+                    binstr = static_cast<uint64_t>(supernova::SInstruction(opcode_enum, r1, rd, reladd));
+                }
             }
         } else {
             return 1;

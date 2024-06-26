@@ -1,0 +1,6 @@
+; absolutely horrible code
+; but it WORKS
+
+[main]:
+    addi r1 r0 #10
+    jal r1 [main]
